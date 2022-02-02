@@ -18,7 +18,6 @@ class Deck():
 
 	def __init__(self, seed=42):
 		self.cards = [Card(-i) for i in range(1, 11)] + [Card(i) for i in range(1, 11)]*2
-		print(self.cards)
 		random.seed(seed)
 
 	def draw(self, start=False):
@@ -60,8 +59,8 @@ class Env():
 	def print(self, text):
 		if self.debug:
 			print(text)
-	def __dealer_turn(self):
 
+	def __dealer_turn(self):
 		card = self.deck.draw()
 		# print(f"O dealer tirou a carta {card}")
 		return card
@@ -117,33 +116,15 @@ class Env():
 
 			return s_, r
 
-	def sample_episode(self, pick_action):
-		
-			g = 0
-			player_card = self.deck.draw(start=True)		
-			dealer_card = self.deck.draw(start=True)
-			s = State(dealer_card, player_card.num)
-			a = pick_action(s)
-			s_, r = self.step(s, a)
-			g += g + r
-			episode = [(s,a,g)]
-			s = s_
-			while s.winner == None:
-				a = pick_action(s)
-				s, r = self.step(s, a)
-				g += g + r
-				episode.append([s, a, g])
-				# print(s)
-
-			return episode
 
 
 class Learner():
-	def __init__(self):
+	def __init__(self, gamma=1):
 		self.value_function = lambda s: max(self.get_q_value(s,'hit'), self.get_q_value(s, 'stick'))
 		self.state_count = {}
 		self.q_values = {}
 		self.n0 = 100
+		self.gamma = gamma
 
 	def get_state_count(self, state, action):
 
@@ -217,56 +198,183 @@ class Learner():
 
 class MCLearner(Learner):
 
-	def __init__(self):
-		super().__init__()
+	def __init__(self, gamma=1):
+		super().__init__(gamma)
+
+	def sample_episode(self, env):
+		
+			g = 0
+			player_card = env.deck.draw(start=True)		
+			dealer_card = env.deck.draw(start=True)
+			s = State(dealer_card, player_card.num)
+			a = self.pick_action(s)
+			s_, r = env.step(s, a)
+			g += g + r
+			episode = [(s,a,g)]
+			s = s_
+			while s.winner == None:
+				a = self.pick_action(s)
+				s, r = env.step(s, a)
+				g += g + r
+				episode.append([s, a, g])
+				# print(s)
+
+			return episode
 
 	def train(self, n_eps, env):
 
 		for _ in range(n_eps):
 
-			episode = env.sample_episode(self.pick_action)
+			episode = self.sample_episode(env)
 
 			for s, a, g in episode:
 				# print(s, a)
 				self.update_state_count(s, a)
-				q = self.get_q_value(s, a) + (g*self.get_step_size(s,a) - self.get_q_value(s, a))
+				q = self.get_q_value(s, a) + self.gamma*(g*self.get_step_size(s,a) - self.get_q_value(s, a))
 				self.update_q_value(s, a, q)
 
 
-def main():
-	mc_learnr = MCLearner()
-	env = Env()
-	n_eps = 100000
+	def plot(self):
+		dealer_showing = list(range(1, 11))
+		player_sum = list(range(1, 31))
+		winners = [None, -1, 0, 1]
+		axis = itertools.product(dealer_showing, player_sum, winners)
 
-	mc_leaner.train(n_eps, env)
+		x_axis = []
+		y_axis = []
+		z_axis = []
 
-	dealer_showing = list(range(1, 11))
-	player_sum = list(range(1, 31))
-	winners = [None, -1, 0, 1]
-	axis = itertools.product(dealer_showing, player_sum, winners)
+		for dealer_first, player_sum, r  in axis:
 
-	x_axis = []
-	y_axis = []
-	z_axis = []
+			state = State(Card(dealer_first), player_sum, winner=r)
 
-	for dealer_first, player_sum, r  in axis:
+			if player_sum < dealer_first and (r == 1 or r == 0):
+				continue
+			if player_sum > 21 and r != -1:
+				continue 
+			if player_sum == 21 and (r == -1 or r == None):
+				continue 
 
-		state = State(Card(dealer_first), player_sum, winner=r)
+			x_axis.append(dealer_first)
+			y_axis.append(player_sum)
+			z_axis.append(self.value_function(state))
 
-		if player_sum < dealer_first and (r == 1 or r == 0):
-			continue
-		if player_sum > 21 and r != -1:
-			continue 
-		if player_sum == 21 and (r == -1 or r == None):
-			continue 
+		fig = plt.figure(figsize=(4,4))
+		ax = plt.axes(projection='3d')
+		ax.plot(x_axis, y_axis, z_axis)
+		plt.show()
 
-		x_axis.append(dealer_first)
-		y_axis.append(player_sum)
-		z_axis.append(mc_leaner.value_function(state))
+class TDLearner(Learner):
+	def __init__(self, LAMBDA=0.9, gamma=1):
+		super().__init__(gamma)
+		self.state_eligibity = {}
+		self.td_lambda = LAMBDA
+		self.state_space = []
+		self.init_state_space()
 
+	def get_eligibity(self, state, action):
+
+		dealer_first = state.dealer_first.num
+		player_sum = state.player_sum
+		try:
+			elig = self.state_count[(dealer_first, player_sum, action)]
+		except:
+			elig = self.state_count[(dealer_first, player_sum, action)] = 0
+
+		return elig
+
+	def update_eligibity(self, state, action, e):
+
+		dealer_first = state.dealer_first.num
+		player_sum = state.player_sum
+		try:
+			self.state_count[(dealer_first, player_sum, action)] += e
+		except:
+			self.state_count[(dealer_first, player_sum, action)] = e
+
+	def init_state_space(self):
+
+		dealer_showing = list(range(1, 11))
+		player_sum = list(range(1, 31))
+		winners = [None, -1, 0, 1]
+		product = itertools.product(dealer_showing, player_sum, winners)
+
+		for dealer_first, player_sum, r  in product:
+
+			state = State(Card(dealer_first), player_sum, winner=r)
+
+			if player_sum < dealer_first and (r == 1 or r == 0):
+				continue
+			if player_sum > 21 and r != -1:
+				continue 
+			if player_sum == 21 and (r == -1 or r == None):
+				continue 
+
+			self.state_space.append(state)
+
+	def train(self, n_eps, env):
+
+		for _ in range(n_eps):
+
+			player_card = env.deck.draw(start=True)		
+			dealer_card = env.deck.draw(start=True)
+			S = State(dealer_card, player_card.num)
+			A = self.pick_action(S)
+
+			while S.winner == None:
+				S_, r = env.step(S, A)
+				A_ = self.pick_action(S_)
+				delta = r + self.gamma*self.get_q_value(S_, A_) - self.get_q_value(S, A)
+				self.update_eligibity(S, A, 1)
+				# for all states and actions update q(s,a) and e(s,a)
+				alpha = 1
+				for s in self.state_space:
+					for a in ['hit', 'stick']:
+						q = self.get_q_value(S,A) + alpha*delta*self.get_eligibity(s, a)
+						e = self.gamma*self.td_lambda*self.get_eligibity(s,a)
+						print(q, e)
+						self.update_q_value(s, a, q)
+						self.update_eligibity(s, a, e)
+						print(self.get_q_value(s, a), self.get_eligibity(s, a))
+				S = S_
+				A = A_
+
+def plot_mse(mc_learner, td_learners):
+
+	mses = []
+	for td_learner in td_learners:
+		mse = 0
+		for s in td_learner.state_space:
+			for a in ['hit', 'stick']:
+				mse_ = (mc_learner.get_q_value(s, a) - td_learner.get_q_value(s, a))**2
+				mse += mse_
+				print('to aqui', mse)
+
+		mses.append(mse)
+
+	y_axis = [0.1*i for i in range(0, 11)]
 	fig = plt.figure(figsize=(4,4))
-	ax = plt.axes(projection='3d')
-	ax.plot(x_axis, y_axis, z_axis)
+	ax = plt.axes()
+	print(mses, y_axis)
+	ax.plot(mses, y_axis)
 	plt.show()
 
-main()
+
+def main():
+	mc_learner = MCLearner()
+	td_learners = [TDLearner(LAMBDA=0.1*i) for i in range(0, 11)]
+
+	env = Env()
+	n_eps_mc = 100000
+
+	mc_learner.train(n_eps_mc, env)
+	# mc_learner.plot()
+	for td_learner in td_learners:
+		print('opa')
+		td_learner.train(1000, env)
+
+	plot_mse(mc_learner, td_learners)
+
+
+if __name__ == '__main__':
+	main()
